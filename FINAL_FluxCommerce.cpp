@@ -1,0 +1,930 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <limits.h>
+#include <ctype.h>
+#include <time.h>
+
+struct User {
+    char username[50];
+    char password[50];
+    int role; // 1 buyer, 2 seller
+    long long wallet; // Account balance
+};
+
+struct Product {
+    long long id; // Large numeric ID
+    char name[50];
+    int price;
+    int stock;
+    char seller[50];
+};
+
+// Snowflake-style ID Generator
+long long generateProductID() {
+    static int sequence = 0;
+
+    long long timestamp = (long long)time(NULL) * 1000; // seconds → ms
+    sequence = (sequence + 1) & 0xFFF; // 12-bit sequence (0–4095)
+
+    return (timestamp << 12) | sequence;
+}
+
+/* ================= UTILITIES ================= */
+int usernameExists(char uname[]) {
+    FILE *fp = fopen("users.txt", "r");
+    if (!fp) return 0;
+
+    struct User u;
+    char a[50], b[50];
+
+    while (fscanf(fp, "%s %s %d %lld", u.username, u.password, &u.role, &u.wallet) != EOF) {
+        strcpy(a, u.username);
+        strcpy(b, uname);
+
+        for (int i = 0; a[i]; i++) a[i] = tolower(a[i]);
+        for (int i = 0; b[i]; i++) b[i] = tolower(b[i]);
+
+        if (strcmp(a, b) == 0) {
+            fclose(fp);
+            return 1;
+        }
+    }
+    fclose(fp);
+    return 0;
+}
+
+// Ignores case-sensitive when searching
+int containsIgnoreCase(const char *str, const char *keyword) {
+    char a[100], b[100];
+    strcpy(a, str);
+    strcpy(b, keyword);
+
+    for (int i = 0; a[i]; i++) a[i] = tolower(a[i]);
+    for (int i = 0; b[i]; i++) b[i] = tolower(b[i]);
+
+    return strstr(a, b) != NULL;
+}
+
+// Function for search bar
+void searchProducts() {
+    struct Product p;
+    char keyword[50];
+    int found = 0;
+	
+	printf("\n(Type 0 anytime to go back)");
+    printf("\nSearch product: ");
+    scanf("%s", keyword);
+
+    // GO BACK
+    if (strcmp(keyword, "0") == 0) {
+        printf("Returning to previous menu...\n");
+        return;
+    }
+
+    FILE *fp = fopen("products.txt", "r");
+    if (!fp) {
+        printf("No products available.\n");
+        return;
+    }
+
+    printf("\nID | NAME | PRICE | STOCK | SELLER\n");
+
+    while (fscanf(fp, "%lld %s %d %d %s",
+                  &p.id, p.name, &p.price, &p.stock, p.seller) != EOF) {
+
+        if (containsIgnoreCase(p.name, keyword)) {
+            printf("%lld | %s | %d | %d | %s\n",
+                   p.id, p.name, p.price, p.stock, p.seller);
+            found = 1;
+        }
+    }
+
+    fclose(fp);
+
+    if (!found)
+        printf("No matching products found.\n");
+}
+
+/* ================= STRING UTILITIES ================= */
+void toLowerCase(char s[]) {
+    for (int i = 0; s[i]; i++)
+        s[i] = tolower(s[i]);
+}
+
+int isValidUsername(char u[]) {
+    int len = strlen(u);
+    int hasLetter = 0;
+
+    if (len < 5 || len > 20) return 0;
+
+    for (int i = 0; i < len; i++) {
+        unsigned char c = u[i];
+
+        // TOLAK NON-ASCII (emoji, simbol aneh)
+        if (c < 32 || c > 126)
+            return 0;
+
+        if (isalnum(c)) {
+            if (isalpha(c)) hasLetter = 1;
+        }
+        else if (c == '.' || c == '_') {
+            // allowed
+        }
+        else {
+            return 0;
+        }
+    }
+
+    if (!hasLetter) return 0;
+    return 1;
+}
+
+int isAllowedPasswordChar(unsigned char c) { //GAJADI PAKE
+    if (c >= 'A' && c <= 'Z') return 1;
+    if (c >= 'a' && c <= 'z') return 1;
+    if (c >= '0' && c <= '9') return 1;
+
+    // simbol keyboard standar
+    if (strchr("!@#$%^&*()-_=+[]{};:'\",.<>?/\\|", c))
+        return 1;
+
+    return 0;
+}
+
+int isValidPassword(char p[], char username[]) {
+    int len = strlen(p);
+    int hasUpper = 0, hasLower = 0, hasDigit = 0;
+
+    if (len < 8 || len > 32) return 0;
+    if (strcmp(p, username) == 0) return 0;
+
+    for (int i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)p[i];
+
+        // NO SPACE
+        if (c == ' ') return 0;
+
+        // Harus ada huruf besar
+        if (isupper(c)) {
+            hasUpper = 1;
+        }
+        // Harus ada huruf kecil
+        else if (islower(c)) {
+            hasLower = 1;
+        }
+        // Harus ada angka
+        else if (isdigit(c)) {
+            hasDigit = 1;
+        }
+        // List simbol keyboard yang DIIZINKAN
+        else if (strchr("!@#$%^&*()-_=+[]{};:'\",.<>?/\\|", c) != NULL) {
+        }
+        // Selain itu seperti emoji, simbol aneh, unicode tidak diperbolehkan
+        else {
+            return 0;
+        }
+    }
+
+    return hasUpper && hasLower && hasDigit;
+}
+
+/* ================= REGISTRATION MECHANICS ================= */
+void registerUser() {
+    struct User u;
+    char originalUsername[50];
+
+    printf("\n=== REGISTRATION RULES ===\n\n");
+    printf("USERNAME:\n");
+    printf("- Length 5-20\n");
+    printf("- Letters, numbers, '.' and '_' only\n");
+    printf("- Cannot be all numbers\n");
+    printf("- Case insensitive\n\n");
+
+    printf("PASSWORD:\n");
+    printf("- Length 8-32\n");
+    printf("- Must contain uppercase, lowercase, and number\n");
+    printf("- Symbols allowed\n");
+    printf("- No spaces, no emoji\n");
+    printf("- Cannot be same as username\n\n");
+    printf("(Type 0 anytime to go back)\n\n");
+
+    /* ================= USERNAME ================= */
+    while (1) {
+        printf("Username: ");
+        scanf("%s", originalUsername);
+
+        if (strcmp(originalUsername, "0") == 0) {
+            printf("\nReturning to main menu...\n\n");
+            return;
+        }
+
+        strcpy(u.username, originalUsername);
+        toLowerCase(u.username);
+
+        if (!isValidUsername(u.username)) {
+            printf("Invalid username format! Please try again :d\n\n");
+            continue;
+        }
+
+        if (usernameExists(u.username)) {
+            printf("Username already exists! Please choose another :L\n\n");
+            continue;
+        }
+		
+		printf("Username approved!\n\n");
+        break; // username OK
+    }
+
+    /* ================= PASSWORD ================= */
+    while (1) {
+        printf("Password: ");
+        scanf("%s", u.password);
+
+        if (strcmp(u.password, "0") == 0) {
+            printf("\nReturning to main menu...\n\n");
+            return;
+        }
+
+        if (!isValidPassword(u.password, originalUsername)) {
+            printf("Invalid password format! Please try again.\n\n");
+            continue;
+        }
+		
+		printf("Password approved!\n\n");
+        break; // password OK
+    }
+
+    /* ================= ROLE ================= */
+    while (1) {
+        printf("Choose your role:\n");
+        printf("1 = Buyer\n");
+        printf("2 = Seller\n");
+        printf("Choice (0 to cancel): ");
+
+        char roleInput[10];
+        scanf("%s", roleInput);
+
+        if (strcmp(roleInput, "0") == 0) {
+            printf("\nReturning to main menu...\n\n");
+            return;
+        }
+
+        if (strlen(roleInput) != 1 || roleInput[0] < '1' || roleInput[0] > '2') {
+            printf("Please only choose the available roles!\n\n");
+            continue;
+        }
+
+        u.role = roleInput[0] - '0';
+        break;
+    }
+
+    /* ================= DEFAULT WALLET ================= */
+    u.wallet = 0;
+
+    /* ================= SAVE ================= */
+    FILE *fp = fopen("users.txt", "a");
+    if (!fp) {
+        printf("Error saving user data!\n");
+        return;
+    }
+
+    fprintf(fp, "%s %s %d %lld\n",
+            u.username,
+            u.password,
+            u.role,
+            u.wallet);
+    fclose(fp);
+
+        /* ========= ACCOUNT INFO ========= */
+    printf("\nACCOUNT SUCCESSFULLY REGISTERED!\n");
+    printf("=================================\n");
+    printf("Account Information:\n");
+    printf("Username : %s\n", u.username);
+    printf("Password : %s\n", u.password);
+    printf("Role     : %s\n",
+           u.role == 1 ? "Buyer" : "Seller");
+    printf("Wallet   : %lld\n", u.wallet);
+    printf("=================================\n");
+    printf("You can now login using your account.\n");
+    printf("Please keep in mind to always remember your account data :D\n");
+}
+
+/* ================= LOGIN MECHANICS ================= */
+int loginUser(struct User *logged) {
+    char uname[50], pass[50];
+    struct User u;
+	
+	printf("\n(Type 0 anytime to go back)\n\n");
+	
+    while (1) {
+        printf("Username: ");
+        scanf("%s", uname);
+
+        if (strcmp(uname, "0") == 0) {
+            printf("\nReturning to main menu...\n\n");
+            return 0; // CANCEL
+        }
+
+        toLowerCase(uname);
+
+        printf("Password: ");
+        scanf("%s", pass);
+
+        if (strcmp(pass, "0") == 0) {
+            printf("\nReturning to main menu...\n\n");
+            return 0; // CANCEL
+        }
+
+        FILE *fp = fopen("users.txt", "r");
+        if (!fp) {
+            printf("User database not found!\n");
+            return -1;
+        }
+
+        int found = 0;
+        while (fscanf(fp, "%s %s %d %lld",
+                      u.username, u.password, &u.role, &u.wallet) != EOF) {
+
+            if (strcmp(u.username, uname) == 0 &&
+                strcmp(u.password, pass) == 0) {
+
+                *logged = u;
+                fclose(fp);
+                printf("\nLoggin successful!\n");
+                return 1; // LOGIN SUCCESS
+            }
+
+            if (strcmp(u.username, uname) == 0)
+                found = 1;
+        }
+
+        fclose(fp);
+
+        if (!found)
+            printf("Username or password is incorrect, please try again.\n\n");
+        else
+        	printf("Username or password is incorrect, please try again.\n\n");
+    }
+}
+
+/* ================= WALLET MECHANICS ================= */
+void topUpWallet(struct User *u) {
+    char input[100];
+    long long amount = 0;
+
+    if (u->wallet == LLONG_MAX) {
+        printf("Your wallet balance is already at the most maximum value!\n");
+        return;
+    }
+	
+	printf("\n(Type 0 anytime to go back)\n");
+    printf("Top up amount: ");
+    scanf("%s", input);
+
+    // GO BACK
+    if (strcmp(input, "0") == 0) {
+        printf("Returning to previous menu...\n");
+        return;
+    }
+
+    // cek numeric
+    for (int i = 0; input[i]; i++) {
+        if (input[i] < '0' || input[i] > '9') {
+            printf("Invalid input value!\n");
+            return;
+        }
+    }
+
+    // konversi manual + overflow guard
+    for (int i = 0; input[i]; i++) {
+        int digit = input[i] - '0';
+        if (amount > (LLONG_MAX - digit) / 10) {
+            printf("Topup amount is too large!\n");
+            return;
+        }
+        amount = amount * 10 + digit;
+    }
+
+    if (amount <= 0) {
+        printf("Invalid amount! (no negatives..)\n");
+        return;
+    }
+
+    if (u->wallet > LLONG_MAX - amount) {
+        printf("Wallet limit value exceeded!\n");
+        return;
+    }
+
+    u->wallet += amount;
+
+    FILE *fp = fopen("users.txt", "r");
+    FILE *temp = fopen("temp.txt", "w");
+    struct User x;
+
+    while (fscanf(fp, "%s %s %d %lld", x.username, x.password, &x.role, &x.wallet) != EOF) {
+        if (strcmp(x.username, u->username) == 0)
+            x.wallet = u->wallet;
+        fprintf(temp, "%s %s %d %lld\n", x.username, x.password, x.role, x.wallet);
+    }
+
+    fclose(fp);
+    fclose(temp);
+    remove("users.txt");
+    rename("temp.txt", "users.txt");
+
+    printf("Wallet balance updated: %lld\n", u->wallet);
+}
+
+/* ================= PRODUCT MECHANICS ================= */
+void viewProducts() {
+    struct Product p[1000];  // adjust size if needed
+    int count = 0;
+
+    FILE *fp = fopen("products.txt", "r");
+    if (!fp) {
+        printf("No products available.\n");
+        return;
+    }
+
+    // Read all products into array
+    while (fscanf(fp, "%lld %s %d %d %s",
+                  &p[count].id,
+                  p[count].name,
+                  &p[count].price,
+                  &p[count].stock,
+                  p[count].seller) != EOF) {
+        count++;
+    }
+
+    fclose(fp);
+
+    // Sort by Product ID (ascending)
+    for (int i = 0; i < count - 1; i++) {
+        for (int j = i + 1; j < count; j++) {
+            if (p[i].id > p[j].id) {
+                struct Product temp = p[i];
+                p[i] = p[j];
+                p[j] = temp;
+            }
+        }
+    }
+
+    printf("\nList of every product possible ID-based ascendingly:\n");
+    printf("ID | NAME | PRICE | STOCK | SELLER\n");
+
+    for (int i = 0; i < count; i++) {
+        printf("%lld | %s | %d | %d | %s\n",
+               p[i].id,
+               p[i].name,
+               p[i].price,
+               p[i].stock,
+               p[i].seller);
+    }
+}
+
+void viewSellerProducts(char seller[]) {
+    struct Product p[1000];
+    int count = 0;
+
+    FILE *fp = fopen("products.txt", "r");
+    if (!fp) {
+        printf("No products available.\n");
+        return;
+    }
+
+    // Read only seller's products
+    while (fscanf(fp, "%lld %s %d %d %s",
+                  &p[count].id,
+                  p[count].name,
+                  &p[count].price,
+                  &p[count].stock,
+                  p[count].seller) != EOF) {
+
+        if (strcmp(p[count].seller, seller) == 0) {
+            count++;
+            if (count >= 1000) break; // safety
+        }
+    }
+
+    fclose(fp);
+
+    if (count == 0) {
+        printf("\nYou have no listed products.\n");
+        return;
+    }
+
+    // Sort ascending by Product ID
+    for (int i = 0; i < count - 1; i++) {
+        for (int j = i + 1; j < count; j++) {
+            if (p[i].id > p[j].id) {
+                struct Product temp = p[i];
+                p[i] = p[j];
+                p[j] = temp;
+            }
+        }
+    }
+
+    // Display
+    printf("\n=== YOUR PRODUCTS (Sorted by ID) ===\n");
+    printf("ID | NAME | PRICE | STOCK\n");
+
+    for (int i = 0; i < count; i++) {
+        printf("%lld | %s | %d | %d\n",
+               p[i].id,
+               p[i].name,
+               p[i].price,
+               p[i].stock);
+    }
+}
+
+void viewBuyerTransactions(char buyer[]) {
+    FILE *fp = fopen("transactions.txt", "r");
+    if (!fp) {
+        printf("No transaction history.\n");
+        return;
+    }
+
+    char b[50], s[50], name[50];
+    int qty;
+    long long total;
+    int found = 0;
+
+    printf("\nSELLER | PRODUCT | QTY | TOTAL\n");
+
+    while (fscanf(fp, "%s %s %s %d %lld",
+                  b, s, name, &qty, &total) != EOF) {
+        if (strcmp(b, buyer) == 0) {
+            printf("%s | %s | %d | %lld\n",
+                   s, name, qty, total);
+            found = 1;
+        }
+    }
+
+    fclose(fp);
+    if (!found)
+        printf("No transaction history.\n");
+}
+
+void viewSellerTransactions(char seller[]) {
+    FILE *fp = fopen("transactions.txt", "r");
+    if (!fp) {
+        printf("No transaction history.\n");
+        return;
+    }
+
+    char b[50], s[50], name[50];
+    int qty;
+    long long total;
+    int found = 0;
+
+    printf("\nBUYER | PRODUCT | QTY | TOTAL\n");
+
+    while (fscanf(fp, "%s %s %s %d %lld",
+                  b, s, name, &qty, &total) != EOF) {
+        if (strcmp(s, seller) == 0) {
+            printf("%s | %s | %d | %lld\n",
+                   b, name, qty, total);
+            found = 1;
+        }
+    }
+
+    fclose(fp);
+    if (!found)
+        printf("No transaction history.\n");
+}
+
+void addProduct(char seller[]) {
+    struct Product p;
+    char input[100];
+
+    printf("\n(Type 0 anytime to go back)\n");
+
+    /* ---------- NAME ---------- */
+    while (1) {
+        printf("Name: ");
+        scanf("%s", input);
+
+        if (strcmp(input, "0") == 0) {
+            printf("Returning to previous menu...\n");
+            return;
+        }
+
+        int len = strlen(input);
+        if (len < 1 || len > 30) {
+            printf("Product name must be 1–30 characters long.\n");
+            continue;
+        }
+
+        strcpy(p.name, input);
+        break;
+    }
+
+    /* ---------- PRICE ---------- */
+    while (1) {
+        printf("Price: ");
+        scanf("%s", input);
+
+        if (strcmp(input, "0") == 0) {
+            printf("Returning to previous menu...\n");
+            return;
+        }
+
+        long long price = 0;
+        int valid = 1;
+
+        for (int i = 0; input[i]; i++) {
+            if (input[i] < '0' || input[i] > '9') {
+                valid = 0;
+                break;
+            }
+            price = price * 10 + (input[i] - '0');
+        }
+
+        if (!valid || price <= 0 || price > 1000000000) {
+            printf("Price must be between 1 and 1,000,000,000.\n");
+            continue;
+        }
+
+        p.price = (int)price;
+        break;
+    }
+
+    /* ---------- STOCK ---------- */
+    while (1) {
+        printf("Stock: ");
+        scanf("%s", input);
+
+        if (strcmp(input, "0") == 0) {
+            printf("Returning to previous menu...\n");
+            return;
+        }
+
+        long long stock = 0;
+        int valid = 1;
+
+        for (int i = 0; input[i]; i++) {
+            if (input[i] < '0' || input[i] > '9') {
+                valid = 0;
+                break;
+            }
+            stock = stock * 10 + (input[i] - '0');
+        }
+
+        if (!valid || stock <= 0 || stock > 1000000) {
+            printf("Stock must be between 1 and 1,000,000.\n");
+            continue;
+        }
+
+        p.stock = (int)stock;
+        break;
+    }
+
+    /* ---------- GENERATE ID (COMMIT TIME) ---------- */
+    p.id = generateProductID();
+    strcpy(p.seller, seller);
+
+    /* ---------- CONFIRMATION DISPLAY ---------- */
+    printf("\n=== PRODUCT SUMMARY ===\n");
+    printf("Product ID : %lld\n", p.id);
+    printf("Name       : %s\n", p.name);
+    printf("Price      : %d\n", p.price);
+    printf("Stock      : %d\n", p.stock);
+    printf("Seller     : %s\n", p.seller);
+
+    /* ---------- SAVE ---------- */
+    FILE *fp = fopen("products.txt", "a");
+    fprintf(fp, "%lld %s %d %d %s\n",
+            p.id, p.name, p.price, p.stock, p.seller);
+    fclose(fp);
+
+    printf("\nProduct added successfully!\n");
+}
+
+/* ================= BUYING MECHANICS ================= */
+void buyProduct(struct User *buyer) {
+    long long id;
+    int qty;
+
+	printf("\n(Type 0 anytime to go back)\n");
+    printf("Product ID: ");
+    if (scanf("%lld", &id) != 1) {
+        while (getchar() != '\n');
+        return;
+    }
+    if (id == 0) {
+    	printf("Returning to previous menu...\n");
+		return;
+	}
+	
+    printf("Quantity: ");
+    if (scanf("%d", &qty) != 1) {
+        while (getchar() != '\n');
+        return;
+    }
+    if (qty == 0) {
+    	printf("Returning to previous menu...\n");
+    	return;
+	}
+
+    FILE *fp = fopen("products.txt", "r");
+    FILE *temp = fopen("temp.txt", "w");
+    FILE *order = fopen("transactions.txt", "a");
+
+    struct Product p;
+    int found = 0;
+
+    while (fscanf(fp, "%lld %s %d %d %s",
+                  &p.id, p.name, &p.price, &p.stock, p.seller) != EOF) {
+
+        if (p.id == id) {
+            found = 1;
+            long long total = (long long)p.price * qty;
+
+            if (qty > p.stock) {
+                printf("Insufficient stock!\n");
+            }
+            else if (buyer->wallet < total) {
+                printf("Insufficient wallet balance!\n");
+            }
+            else {
+                p.stock -= qty;
+                buyer->wallet -= total;
+
+                /* UPDATE USERS */
+                FILE *uf = fopen("users.txt", "r");
+                FILE *ut = fopen("utemp.txt", "w");
+                struct User u;
+
+                while (fscanf(uf, "%s %s %d %lld",
+                              u.username, u.password, &u.role, &u.wallet) != EOF) {
+
+                    if (strcmp(u.username, buyer->username) == 0)
+                        u.wallet = buyer->wallet;
+
+                    if (strcmp(u.username, p.seller) == 0)
+                        u.wallet += total;
+
+                    fprintf(ut, "%s %s %d %lld\n",
+                            u.username, u.password, u.role, u.wallet);
+                }
+
+                fclose(uf);
+                fclose(ut);
+                remove("users.txt");
+                rename("utemp.txt", "users.txt");
+
+                fprintf(order, "%s %s %s %d %lld\n",
+                        buyer->username, p.seller, p.name, qty, total);
+
+                printf("Purchase successful!\n");
+            }
+        }
+
+        fprintf(temp, "%lld %s %d %d %s\n",
+                p.id, p.name, p.price, p.stock, p.seller);
+    }
+
+    fclose(fp);
+    fclose(temp);
+    fclose(order);
+
+    remove("products.txt");
+    rename("temp.txt", "products.txt");
+
+    if (!found)
+        printf("Product not found.\n");
+}
+
+/* ================= BUYER/SELLER/ADMIN MENU MECHANICS ================= */
+void buyerMenu(struct User *u) {
+    int c;
+
+    printf("\n=== BUYER MENU (%s | Wallet:%lld) ===\n",
+           u->username, u->wallet);
+    printf("\nHello %s!\n", u->username);
+    printf("What brings you here today?\n\n");
+
+    printf("1. View All Products\n");
+    printf("2. Search Products\n");
+    printf("3. Buy items\n");
+    printf("4. Top up\n");
+    printf("5. View wallet balance\n");
+    printf("6. View transaction history\n"); // ✅ NEW
+    printf("7. Logout\n");
+
+    while (1) {
+        printf("\nChoice: ");
+
+        if (scanf("%d", &c) != 1) {
+            printf("Please choose the available option!\n");
+            while (getchar() != '\n');
+            continue;
+        }
+
+        if (c < 1 || c > 7) {
+            printf("Please choose the available option!\n");
+            continue;
+        }
+
+        if (c == 1) viewProducts();
+        else if (c == 2) searchProducts();
+        else if (c == 3) buyProduct(u);
+        else if (c == 4) topUpWallet(u);
+        else if (c == 5)
+            printf("Current wallet balance: %lld\n", u->wallet);
+        else if (c == 6)
+            viewBuyerTransactions(u->username);   // ✅ HERE
+        else if (c == 7) {
+            printf("\nLogging out...\n");
+            break;
+        }
+    }
+}
+
+void sellerMenu(struct User *u) {
+    int c;
+    
+	printf("\n=== SELLER MENU (%s | Wallet:%lld) ===\n", u->username, u->wallet);
+    printf("1. Add product\n");
+    printf("2. View my products\n");
+    printf("3. View wallet balance\n");
+    printf("4. View sales history\n");
+    printf("5. Logout\n");
+
+    while (1) {
+        printf("\nChoice: ");
+
+        if (scanf("%d", &c) != 1) {
+            while (getchar() != '\n');
+            continue;
+        }
+
+        if (c == 1) addProduct(u->username);
+        else if (c == 2) viewSellerProducts(u->username);
+        else if (c == 3) printf("Wallet balance: %lld\n", u->wallet);
+        else if (c == 4) viewSellerTransactions(u->username);
+        else if (c == 5) {
+			printf("\nLogging out...\n");
+    		break;
+		}
+    }
+}
+
+void adminMenu() {
+    printf("\n=== ADMIN MODE ===\n");
+    viewProducts();
+}
+
+/* ================= MAIN LOBBY ================= */
+int main() {
+    struct User user;
+    int c;
+    
+    printf("\n"
+"========================================\n"
+"   ______ _      _   _   _               \n"
+"  |  ____| |    | | | | | |              \n"
+"  | |__  | |    | |_| | | |__   ___ _ __ \n"
+"  |  __| | |    |  _  | | '_ \\ / _ \\ '__|\n"
+"  | |____| |____| | | | | |_) |  __/ |   \n"
+"  |______|______|_| |_| |_.__/ \\___|_|   \n"
+"                                          \n"
+"            F L U X   C O M M E R C E      \n"
+"========================================\n");
+	printf("- - - - Welcome to FluxCommerce! - - - -\n");
+    printf("- - What would you like to do today? - -\n\n");
+
+    while (1) {
+        printf("1.Register\n2.Login\n3.Exit\nChoice: ");
+        
+        // Input validation
+        if (scanf("%d", &c) != 1) {
+            printf("Please only choose the available options!\n\n");
+
+            // Clears invalid input
+            while (getchar() != '\n');
+            continue;
+        }
+
+        if (c == 1) registerUser();
+		else if (c == 2) {
+    		int result = loginUser(&user);
+
+    		if (result == 1) {
+        		if (user.role == 1) buyerMenu(&user);
+        		else if (user.role == 2) sellerMenu(&user);
+        		else if (user.role == 3) adminMenu();
+    		} else if (result == -1) {
+        		printf("Username or password is incorrect.\n");
+   			}
+    // Result == 0 → cancel → DIAM SAJA
+		}
+		else if (c == 3) {
+			break;
+		} else {
+			printf("Please only choose the available options!\n");
+		}
+    }
+    return 0;
+}
