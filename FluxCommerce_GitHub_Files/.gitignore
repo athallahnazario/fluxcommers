@@ -1,0 +1,7 @@
+flux
+*.exe
+*.out
+temp.txt
+utemp.txt
+.DS_Store
+Thumbs.db
